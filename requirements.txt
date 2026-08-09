@@ -9,3 +9,4 @@ pandas
 numpy
 openai
 langchain
+beautifulsoup4
