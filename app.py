@@ -7,34 +7,24 @@ from pypdf import PdfReader
 from dotenv import load_dotenv
 from scrapers.direct_scraper import fetch_jobs_direct as fetch_jobs
 
+# 1. Load Environment & Streamlit Secrets
 load_dotenv()
 
-# Safely read GROQ_API_KEY from Streamlit Cloud Secrets or local .env
-def get_available_groq_model(api_key: str) -> str:
-    """Fetches the first available chat model ID from Groq."""
-    try:
-        res = requests.get(
-            "https://api.groq.com/openai/v1/models",
-            headers={"Authorization": f"Bearer {api_key.strip()}"},
-            timeout=10
-        )
-        if res.status_code == 200:
-            models_data = res.json().get("data", [])
-            model_ids = [m["id"] for m in models_data]
-            # Prioritize standard models
-            for preferred in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama3-8b-8192", "mixtral-8x7b-32768"]:
-                if preferred in model_ids:
-                    return preferred
-            if model_ids:
-                return model_ids[0]
-    except Exception:
-        pass
-    return "llama-3.1-8b-instant"
-# Helper: Direct API call to bypass Groq SDK / Python 3.14 issues
+GROQ_API_KEY = None
+if "GROQ_API_KEY" in st.secrets:
+    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+if not GROQ_API_KEY:
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+# 2. Helper function: Make direct REST calls to Groq API
 def call_groq_api(prompt: str) -> dict:
+    if not GROQ_API_KEY:
+        st.error("❌ `GROQ_API_KEY` is missing. Please add it to your Streamlit Cloud Secrets.")
+        st.stop()
+
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY.strip()}",
+        "Authorization": f"Bearer {str(GROQ_API_KEY).strip()}",
         "Content-Type": "application/json"
     }
     payload = {
@@ -48,18 +38,12 @@ def call_groq_api(prompt: str) -> dict:
     
     if response.status_code != 200:
         st.error(f"Groq API Error ({response.status_code}): {response.text}")
-        raise RuntimeError(f"Groq API failed: {response.text}")
+        raise RuntimeError(f"Groq API call failed: {response.text}")
         
     data = response.json()
     return json.loads(data["choices"][0]["message"]["content"])
 
-
-st.set_page_config(page_title="AI Job Finder", page_icon="💼", layout="wide")
-
-st.title("💼 AI Resume-Based Job Matcher")
-st.write("Upload your resume PDF to instantly discover and evaluate matching job openings.")
-
-# 1. Helper function: Extract raw text from PDF
+# 3. Helper function: Extract raw text from PDF
 def extract_text_from_pdf(uploaded_file) -> str:
     reader = PdfReader(uploaded_file)
     text = ""
@@ -69,7 +53,7 @@ def extract_text_from_pdf(uploaded_file) -> str:
             text += page_text + "\n"
     return text
 
-# 2. Helper function: Extract structured profile from resume
+# 4. Helper function: Parse resume with Groq
 def parse_resume_with_groq(resume_text: str) -> dict:
     prompt = f"""
     Analyze the following resume text and extract the candidate's core profile.
@@ -79,7 +63,7 @@ def parse_resume_with_groq(resume_text: str) -> dict:
     
     Return ONLY a valid JSON object in this exact format:
     {{
-        "primary_role": "<best target job title>",
+        "primary_role": "<best target job title, e.g., Software Engineer>",
         "key_skills": ["skill1", "skill2", "skill3"],
         "years_experience": 1,
         "summary": "<1-2 sentence summary>"
@@ -87,7 +71,7 @@ def parse_resume_with_groq(resume_text: str) -> dict:
     """
     return call_groq_api(prompt)
 
-# 3. Helper function: Evaluate job match against candidate profile
+# 5. Helper function: Evaluate job matching
 def evaluate_job(candidate_profile: dict, job: dict) -> dict:
     job_title = job.get("title") or job.get("jobTitle") or "Role"
     company = job.get("companyName") or job.get("company") or "Company"
@@ -119,7 +103,11 @@ def evaluate_job(candidate_profile: dict, job: dict) -> dict:
     res["apply_url"] = apply_url
     return res
 
-# --- UI LAYOUT ---
+# --- UI Application Layout ---
+st.set_page_config(page_title="AI Job Finder", page_icon="💼", layout="wide")
+
+st.title("💼 AI Resume-Based Job Matcher")
+st.write("Upload your resume PDF to instantly discover and evaluate matching job openings.")
 
 uploaded_file = st.file_uploader("Upload your Resume (PDF)", type=["pdf"])
 
@@ -133,58 +121,55 @@ if uploaded_file is not None:
     st.subheader("📋 Extracted Profile")
     col1, col2 = st.columns(2)
     with col1:
-        st.write(f"**Target Role:** {profile.get('primary_role')}")
-        st.write(f"**Estimated Experience:** {profile.get('years_experience')} years")
+        st.write(f"**Target Role:** {profile.get('primary_role', 'Not detected')}")
+        st.write(f"**Experience:** ~{profile.get('years_experience', 0)} years")
     with col2:
         st.write(f"**Key Skills:** {', '.join(profile.get('key_skills', []))}")
-    st.info(f"**Summary:** {profile.get('summary')}")
-
-    st.markdown("---")
+        st.write(f"**Summary:** {profile.get('summary', '')}")
+        
+    st.divider()
+    st.subheader("🔍 Find Matching Jobs")
     
-    # Search Options
-    st.subheader("🔍 Search Job Postings")
     c1, c2, c3 = st.columns([2, 2, 1])
     search_role = c1.text_input("Job Keyword", value=profile.get("primary_role", "Software Engineer"))
-    search_location = c2.text_input("Location", value="Remote")
+    search_location = c2.text_input("Location", value="Bengaluru")
     max_jobs_to_fetch = c3.slider("Max Jobs", 3, 15, 5)
-
+    
     if st.button("🚀 Find & Evaluate Matching Jobs"):
-        with st.spinner(f"Scraping active jobs for '{search_role}'..."):
+        with st.spinner(f"Scraping live jobs for '{search_role}' in '{search_location}'..."):
             raw_jobs = fetch_jobs(search_query=search_role, location=search_location, max_jobs=max_jobs_to_fetch)
         
-        st.success(f"Fetched {len(raw_jobs)} live job postings. Evaluating match scores...")
-        
-        evaluations = []
-        progress_bar = st.progress(0)
-        
-        for idx, job in enumerate(raw_jobs):
-            eval_res = evaluate_job(profile, job)
-            evaluations.append(eval_res)
-            progress_bar.progress((idx + 1) / len(raw_jobs))
-            time.sleep(1)  # Prevent rate limit spikes
-
-        # Sort jobs by match score descending
-        evaluations = sorted(evaluations, key=lambda x: x["match_score"], reverse=True)
-
-        st.subheader("🎯 Matching Positions")
-        
-        for eval_item in evaluations:
-            score = eval_item["match_score"]
+        if not raw_jobs:
+            st.warning("No jobs found matching your criteria. Try adjusting the search keyword or location.")
+        else:
+            st.info(f"Retrieved {len(raw_jobs)} live job postings. Evaluating alignment with Groq...")
             
-            # Color badge by score
-            if score >= 75:
-                score_badge = f":green[{score}% Match]"
-            elif score >= 50:
-                score_badge = f":orange[{score}% Match]"
-            else:
-                score_badge = f":red[{score}% Match]"
-
-            with st.expander(f"{eval_item['title']} @ {eval_item['company']} — {score_badge}"):
-                st.write(f"📍 **Location:** {eval_item.get('location', search_location)}")
-                st.write(f"**Recommendation:** {eval_item['recommendation']}")
-                st.write(f"**Matched Skills:** {', '.join(eval_item.get('matched_skills', []))}")
-                if eval_item.get('missing_skills'):
-                    st.write(f"**Missing Skills:** {', '.join(eval_item.get('missing_skills', []))}")
+            evaluations = []
+            progress_bar = st.progress(0)
+            
+            for idx, job in enumerate(raw_jobs):
+                eval_res = evaluate_job(profile, job)
+                evaluations.append(eval_res)
+                progress_bar.progress((idx + 1) / len(raw_jobs))
+                time.sleep(0.5)
+            
+            evaluations = sorted(evaluations, key=lambda x: x.get("match_score", 0), reverse=True)
+            
+            st.subheader("🎯 Evaluation Results")
+            for eval_item in evaluations:
+                score = eval_item.get("match_score", 0)
+                if score >= 80:
+                    score_badge = f":green[{score}% Match]"
+                elif score >= 60:
+                    score_badge = f":orange[{score}% Match]"
+                else:
+                    score_badge = f":red[{score}% Match]"
                 
-                if eval_item.get('apply_url'):
-                    st.link_button("👉 Apply Now", eval_item['apply_url'])
+                with st.expander(f"{eval_item['title']} @ {eval_item['company']} — {score_badge}"):
+                    st.write(f"**Recommendation:** {eval_item.get('recommendation', '')}")
+                    st.write(f"**Matched Skills:** {', '.join(eval_item.get('matched_skills', []))}")
+                    if eval_item.get("missing_skills"):
+                        st.write(f"**Missing Skills:** {', '.join(eval_item.get('missing_skills', []))}")
+                    
+                    if eval_item.get("apply_url"):
+                        st.link_button("👉 Apply Now", eval_item["apply_url"])
