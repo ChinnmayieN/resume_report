@@ -10,12 +10,26 @@ from scrapers.direct_scraper import fetch_jobs_direct as fetch_jobs
 load_dotenv()
 
 # Safely read GROQ_API_KEY from Streamlit Cloud Secrets or local .env
-GROQ_API_KEY = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
-
-if not GROQ_API_KEY:
-    st.error("❌ `GROQ_API_KEY` is missing. Please add it to your Streamlit Cloud Secrets or .env file.")
-    st.stop()
-
+def get_available_groq_model(api_key: str) -> str:
+    """Fetches the first available chat model ID from Groq."""
+    try:
+        res = requests.get(
+            "https://api.groq.com/openai/v1/models",
+            headers={"Authorization": f"Bearer {api_key.strip()}"},
+            timeout=10
+        )
+        if res.status_code == 200:
+            models_data = res.json().get("data", [])
+            model_ids = [m["id"] for m in models_data]
+            # Prioritize standard models
+            for preferred in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama3-8b-8192", "mixtral-8x7b-32768"]:
+                if preferred in model_ids:
+                    return preferred
+            if model_ids:
+                return model_ids[0]
+    except Exception:
+        pass
+    return "llama-3.1-8b-instant"
 # Helper: Direct API call to bypass Groq SDK / Python 3.14 issues
 def call_groq_api(prompt: str) -> dict:
     url = "https://api.groq.com/openai/v1/chat/completions"
