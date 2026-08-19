@@ -16,19 +16,57 @@ if "GROQ_API_KEY" in st.secrets:
 if not GROQ_API_KEY:
     GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# 2. Helper function: Make direct REST calls to Groq API
+# 2. Helper function: Make direct REST calls to Groq API with dynamic model discovery
 def call_groq_api(prompt: str) -> dict:
     if not GROQ_API_KEY:
         st.error("❌ `GROQ_API_KEY` is missing. Please add it to your Streamlit Cloud Secrets.")
         st.stop()
 
-    url = "https://api.groq.com/openai/v1/chat/completions"
+    # Clean key of any accidental quotes or extra spaces
+    clean_key = str(GROQ_API_KEY).strip().strip('"').strip("'")
     headers = {
-        "Authorization": f"Bearer {str(GROQ_API_KEY).strip()}",
+        "Authorization": f"Bearer {clean_key}",
         "Content-Type": "application/json"
     }
+
+    # Step A: Query Groq for accessible models on this specific API key
+    try:
+        models_resp = requests.get("https://api.groq.com/openai/v1/models", headers=headers, timeout=10)
+        if models_resp.status_code == 200:
+            available_models = [m["id"] for m in models_resp.json().get("data", [])]
+        else:
+            st.error(f"Authentication / Key Check Failed ({models_resp.status_code}): {models_resp.text}")
+            raise RuntimeError(f"Key authentication failed: {models_resp.text}")
+    except Exception as e:
+        st.error(f"Could not reach Groq models endpoint: {e}")
+        raise e
+
+    # Step B: Pick the best active model returned by your account
+    chosen_model = None
+    priority_models = [
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "llama3-70b-8192",
+        "llama3-8b-8192",
+        "gemma2-9b-it",
+        "mixtral-8x7b-32768"
+    ]
+    for model_name in priority_models:
+        if model_name in available_models:
+            chosen_model = model_name
+            break
+            
+    if not chosen_model and available_models:
+        chosen_model = available_models[0]
+        
+    if not chosen_model:
+        st.error(f"No available models found for this Groq key. Available list: {available_models}")
+        raise RuntimeError("No chat models accessible.")
+
+    # Step C: Send chat completion request
+    url = "https://api.groq.com/openai/v1/chat/completions"
     payload = {
-        "model": "llama-3.1-8b-instant",
+        "model": chosen_model,
         "messages": [{"role": "user", "content": prompt}],
         "response_format": {"type": "json_object"},
         "temperature": 0.1
@@ -37,7 +75,7 @@ def call_groq_api(prompt: str) -> dict:
     response = requests.post(url, headers=headers, json=payload, timeout=25)
     
     if response.status_code != 200:
-        st.error(f"Groq API Error ({response.status_code}): {response.text}")
+        st.error(f"Groq API Error ({response.status_code}) using model '{chosen_model}': {response.text}")
         raise RuntimeError(f"Groq API call failed: {response.text}")
         
     data = response.json()
