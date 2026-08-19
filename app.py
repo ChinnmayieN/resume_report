@@ -9,8 +9,20 @@ from dotenv import load_dotenv
 from scrapers.direct_scraper import fetch_jobs_direct as fetch_jobs
 
 load_dotenv()
+# Prioritize Streamlit Cloud secrets, then local environment variables
+if "GROQ_API_KEY" in st.secrets:
+    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+else:
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+# Stop immediately if key is missing
+if not GROQ_API_KEY:
+    st.error("❌ `GROQ_API_KEY` was not found. Please add it to your Streamlit Cloud Secrets.")
+    st.stop()
+
+# Helper to get an authenticated Groq client
+def get_groq_client():
+    return Groq(api_key=GROQ_API_KEY)
 
 st.set_page_config(page_title="AI Job Finder", page_icon="💼", layout="wide")
 
@@ -29,7 +41,7 @@ def extract_text_from_pdf(uploaded_file) -> str:
 
 # 2. Helper function: Extract structured profile from resume using Groq
 def parse_resume_with_groq(resume_text: str) -> dict:
-    client = Groq(api_key=GROQ_API_KEY)
+    client = get_groq_client()
     
     prompt = f"""
     Analyze the following resume text and extract the candidate's core profile.
@@ -39,10 +51,10 @@ def parse_resume_with_groq(resume_text: str) -> dict:
     
     Return ONLY a valid JSON object in this exact format:
     {{
-        "primary_role": "<best target job title, e.g., Full Stack Engineer, Data Analyst>",
+        "primary_role": "<best target job title>",
         "key_skills": ["skill1", "skill2", "skill3"],
-        "years_experience": <estimated integer number of years>,
-        "summary": "<1-2 sentence professional summary>"
+        "years_experience": <integer years>,
+        "summary": "<1-2 sentence summary>"
     }}
     """
     
@@ -56,7 +68,7 @@ def parse_resume_with_groq(resume_text: str) -> dict:
 
 # 3. Helper function: Evaluate job match against candidate profile
 def evaluate_job(candidate_profile: dict, job: dict) -> dict:
-    client = Groq(api_key=GROQ_API_KEY)
+    client = get_groq_client()
     
     job_title = job.get("title") or job.get("jobTitle") or "Role"
     company = job.get("companyName") or job.get("company") or "Company"
