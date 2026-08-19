@@ -19,6 +19,7 @@ if not GROQ_API_KEY:
 # 2. Helper function: Make direct REST calls to Groq API with dynamic model discovery
 # 2. Helper function: Call standard Groq chat completion models directly
 # 2. Helper function: Direct REST call to active Groq chat models
+# 2. Helper function: Direct REST call to active models on your Groq account
 def call_groq_api(prompt: str) -> dict:
     if not GROQ_API_KEY:
         st.error("❌ `GROQ_API_KEY` is missing. Please add it to your Streamlit Cloud Secrets.")
@@ -30,10 +31,15 @@ def call_groq_api(prompt: str) -> dict:
         "Content-Type": "application/json"
     }
 
-    # Only currently active Groq production models
-    active_models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+    # Match the exact models shown in your Groq console
+    available_models = [
+        "qwen/qwen3.6-27b",
+        "groq/compound-mini",
+        "groq/compound"
+    ]
 
-    for model_name in active_models:
+    last_error = ""
+    for model_name in available_models:
         payload = {
             "model": model_name,
             "messages": [{"role": "user", "content": prompt}],
@@ -53,12 +59,12 @@ def call_groq_api(prompt: str) -> dict:
                 data = response.json()
                 return json.loads(data["choices"][0]["message"]["content"])
             else:
-                # If the first model fails with something other than rate-limit, stop and report immediately
-                st.error(f"⚠️ Groq [{model_name}] returned HTTP {response.status_code} using key ({clean_key[:8]}...): {response.text}")
+                last_error = f"Model '{model_name}' returned HTTP {response.status_code}: {response.text}"
         except Exception as e:
-            st.error(f"Connection error with {model_name}: {e}")
+            last_error = f"Request to '{model_name}' failed: {e}"
 
-    raise RuntimeError("Groq API request failed across active models.")
+    st.error(f"❌ Failed across available models. Details: {last_error}")
+    raise RuntimeError(last_error)
 # 3. Helper function: Extract raw text from PDF
 def extract_text_from_pdf(uploaded_file) -> str:
     reader = PdfReader(uploaded_file)
