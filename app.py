@@ -1,28 +1,44 @@
 import os
 import json
 import time
+import requests
 import streamlit as st
 from pypdf import PdfReader
-from groq import Groq
 from dotenv import load_dotenv
-# For Solution 2 (Zero API key option):
 from scrapers.direct_scraper import fetch_jobs_direct as fetch_jobs
 
 load_dotenv()
-# Prioritize Streamlit Cloud secrets, then local environment variables
-if "GROQ_API_KEY" in st.secrets:
-    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
-else:
-    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# Stop immediately if key is missing
+# Safely read GROQ_API_KEY from Streamlit Cloud Secrets or local .env
+GROQ_API_KEY = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
+
 if not GROQ_API_KEY:
-    st.error("❌ `GROQ_API_KEY` was not found. Please add it to your Streamlit Cloud Secrets.")
+    st.error("❌ `GROQ_API_KEY` is missing. Please add it to your Streamlit Cloud Secrets or .env file.")
     st.stop()
 
-# Helper to get an authenticated Groq client
-def get_groq_client():
-    return Groq(api_key=GROQ_API_KEY)
+# Helper: Direct API call to bypass Groq SDK / Python 3.14 issues
+def call_groq_api(prompt: str) -> dict:
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY.strip()}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "llama-3.1-8b-instant",
+        "messages": [{"role": "user", "content": prompt}],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.1
+    }
+    
+    response = requests.post(url, headers=headers, json=payload, timeout=25)
+    
+    if response.status_code != 200:
+        st.error(f"Groq API Error ({response.status_code}): {response.text}")
+        raise RuntimeError(f"Groq API failed: {response.text}")
+        
+    data = response.json()
+    return json.loads(data["choices"][0]["message"]["content"])
+
 
 st.set_page_config(page_title="AI Job Finder", page_icon="💼", layout="wide")
 
@@ -39,10 +55,8 @@ def extract_text_from_pdf(uploaded_file) -> str:
             text += page_text + "\n"
     return text
 
-# 2. Helper function: Extract structured profile from resume using Groq
+# 2. Helper function: Extract structured profile from resume
 def parse_resume_with_groq(resume_text: str) -> dict:
-    client = get_groq_client()
-    
     prompt = f"""
     Analyze the following resume text and extract the candidate's core profile.
     
@@ -53,23 +67,14 @@ def parse_resume_with_groq(resume_text: str) -> dict:
     {{
         "primary_role": "<best target job title>",
         "key_skills": ["skill1", "skill2", "skill3"],
-        "years_experience": <integer years>,
+        "years_experience": 1,
         "summary": "<1-2 sentence summary>"
     }}
     """
-    
-    response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        response_format={"type": "json_object"},
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.1,
-    )
-    return json.loads(response.choices[0].message.content)
+    return call_groq_api(prompt)
 
 # 3. Helper function: Evaluate job match against candidate profile
 def evaluate_job(candidate_profile: dict, job: dict) -> dict:
-    client = get_groq_client()
-    
     job_title = job.get("title") or job.get("jobTitle") or "Role"
     company = job.get("companyName") or job.get("company") or "Company"
     description = job.get("description") or job.get("jobDescription") or ""
@@ -88,26 +93,17 @@ def evaluate_job(candidate_profile: dict, job: dict) -> dict:
     
     Return ONLY a valid JSON object in this exact format:
     {{
-        "match_score": <number 0-100>,
+        "match_score": 80,
         "matched_skills": ["skill1", "skill2"],
         "missing_skills": ["skill1"],
         "recommendation": "<short 1-sentence assessment>"
     }}
     """
-    
-    response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        response_format={"type": "json_object"},
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.1,
-    )
-    
-    res = json.loads(response.choices[0].message.content)
+    res = call_groq_api(prompt)
     res["title"] = job_title
     res["company"] = company
     res["apply_url"] = apply_url
     return res
-
 
 # --- UI LAYOUT ---
 
